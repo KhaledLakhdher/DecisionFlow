@@ -1,0 +1,21 @@
+# Normalize text files to LF in the repository.
+* text=auto eol=lf
+
+# Files consumed by Linux containers must keep LF regardless of host OS.
+# A CRLF here makes the Postgres init script fail with an opaque
+# "bad interpreter" error inside the container.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Windows-native scripts keep CRLF.
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Never touch binaries or fixture data.
+*.png binary
+*.jpg binary
+*.duckdb binary
+*.xlsx binary

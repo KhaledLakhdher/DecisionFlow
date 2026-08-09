@@ -1,0 +1,36 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# --- Node / Next.js ---
+node_modules/
+.next/
+out/
+dist/
+*.tsbuildinfo
+
+# --- Secrets & local config ---
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# --- Local data plane ---
+# Per-workspace DuckDB files and scratch artifacts never belong in git.
+storage/
+*.duckdb
+*.duckdb.wal
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

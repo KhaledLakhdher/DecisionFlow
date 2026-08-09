@@ -1,0 +1,78 @@
+"""Structured logging.
+
+JSON in production so logs are machine-parseable by whatever ships them;
+coloured key-value output in development so they are readable by a human.
+"""
+
+from __future__ import annotations
+
+import logging
+import sys
+
+import structlog
+
+from decisionflow.core.config import settings
+
+
+def configure_logging() -> None:
+    """Configure structlog and route stdlib logging through it.
+
+    Safe to call more than once; later calls simply replace the configuration.
+    """
+    level = logging.DEBUG if settings.debug else logging.INFO
+
+    shared_processors: list[structlog.typing.Processor] = [
+        structlog.contextvars.merge_contextvars,
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.add_logger_name,
+        structlog.processors.TimeStamper(fmt="iso", utc=True),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.UnicodeDecoder(),
+    ]
+
+    renderer: structlog.typing.Processor = (
+        structlog.processors.JSONRenderer()
+        if settings.is_production
+        else structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty())
+    )
+
+    structlog.configure(
+        processors=[
+            *shared_processors,
+            structlog.processors.format_exc_info,
+            renderer,
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(level),
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        cache_logger_on_first_use=True,
+    )
+
+    # Hand stdlib loggers (uvicorn, sqlalchemy, arq) the same renderer so the
+    # output stream stays homogeneous.
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(
+        structlog.stdlib.ProcessorFormatter(
+            foreign_pre_chain=shared_processors,
+            processors=[
+                structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+                renderer,
+            ],
+        )
+    )
+
+    root = logging.getLogger()
+    root.handlers = [handler]
+    root.setLevel(level)
+
+    # uvicorn installs its own handlers; drop them so records propagate to root
+    # exactly once instead of being emitted twice in two different formats.
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        logging.getLogger(name).handlers = []
+        logging.getLogger(name).propagate = True
+
+    # SQLAlchemy's engine logger is extremely chatty at INFO.
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+
+
+def get_logger(name: str) -> structlog.stdlib.BoundLogger:
+    return structlog.stdlib.get_logger(name)

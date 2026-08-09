@@ -1,0 +1,86 @@
+[project]
+name = "decisionflow-api"
+version = "0.1.0"
+description = "DecisionFlow — AI Business Analyst. Turn your data into decisions."
+requires-python = ">=3.12"
+
+dependencies = [
+    # --- Web ---
+    "fastapi>=0.141",
+    "uvicorn[standard]>=0.52",
+    "python-multipart>=0.0.20",
+
+    # --- Config & validation ---
+    "pydantic>=2.13",
+    "pydantic-settings>=2.15",
+    "email-validator>=2.2",
+
+    # --- Control plane (Postgres) ---
+    "sqlalchemy[asyncio]>=2.0.51",
+    "asyncpg>=0.31",
+    "alembic>=1.19",
+    "pgvector>=0.3.6",
+
+    # --- Data plane ---
+    # Polars + DuckDB deliberately replace pandas here: lazy execution, no
+    # index semantics to fight, and DuckDB is already the analytical engine.
+    "polars>=1.43",
+    "duckdb>=1.5",
+    "fastexcel>=0.12",
+
+    # --- Auth ---
+    "argon2-cffi>=25.1",
+    "pyjwt>=2.13",
+
+    # --- Jobs & storage ---
+    "arq>=0.28",
+    "redis[hiredis]>=5.3",
+    "boto3>=1.43",
+
+    # --- LLM ---
+    "google-genai>=2.17",
+
+    # --- Observability ---
+    "structlog>=25.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "httpx>=0.28",
+    "ruff>=0.9",
+    "mypy>=1.14",
+]
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["decisionflow*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC", "S", "C4", "SIM", "RUF"]
+ignore = [
+    "S101",  # assert is fine in tests
+    "B008",  # FastAPI Depends() in defaults is the documented idiom
+]
+
+[tool.ruff.lint.per-file-ignores]
+"alembic/*" = ["E501"]
+"tests/*" = ["S105", "S106"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_ignores = true
+disallow_untyped_defs = true
+plugins = ["pydantic.mypy"]

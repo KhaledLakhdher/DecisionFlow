@@ -9,36 +9,60 @@ The policy compares `org_id` against the `app.current_org_id` setting that
 `current_setting(..., true)` returns NULL, the comparison is NULL, and no rows
 match — so a session that forgot to establish tenant context sees nothing
 rather than everything.
+
+Both helpers return a *sequence of individual statements*. asyncpg prepares
+every statement it executes and refuses to prepare more than one command at a
+time, so a single semicolon-joined blob fails at runtime. Returning a list also
+spares callers from splitting SQL on ";", which breaks the moment a policy
+expression contains one.
 """
 
 from __future__ import annotations
 
 TENANT_SETTING = "app.current_org_id"
 
+# Repeated in USING and WITH CHECK so the policy governs reads and writes
+# alike: without WITH CHECK a tenant could insert rows attributed to another.
+_MATCH = "{column} = NULLIF(current_setting('" + TENANT_SETTING + "', true), '')::uuid"
 
-def enable_rls(table: str, *, org_column: str = "org_id") -> str:
-    """SQL enabling FORCE RLS on `table` with the standard tenant policy.
 
-    FORCE is required: without it Postgres exempts the table's owner, and the
-    owner is exactly who Alembic and any psql debugging session connect as.
+def policy_name(table: str) -> str:
+    return f"{table}_tenant_isolation"
+
+
+def enable_rls(table: str, *, org_column: str = "org_id") -> tuple[str, ...]:
+    """Statements enabling FORCE RLS on `table` with the standard tenant policy.
+
+    FORCE removes the exemption Postgres grants a table's ordinary owner. It
+    does *not* — and cannot — constrain a SUPERUSER or a role holding
+    BYPASSRLS; those ignore row-level security entirely.
+
+    That matters here because the Postgres image's bootstrap role is a
+    superuser, and it owns these tables. So the migration role does see every
+    row. Isolation rests on the API connecting as `app_db_user`, which holds
+    neither attribute. Hardening step for production: make the schema owner an
+    ordinary non-superuser role, at which point FORCE starts to bite as well.
+
+    `tests/test_rls.py` asserts both halves of this.
     """
-    policy = f"{table}_tenant_isolation"
-    return f"""
-    ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;
-    ALTER TABLE {table} FORCE ROW LEVEL SECURITY;
+    match = _MATCH.format(column=org_column)
+    policy = policy_name(table)
+    return (
+        f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY",
+        f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY",
+        f"DROP POLICY IF EXISTS {policy} ON {table}",
+        (
+            f"CREATE POLICY {policy} ON {table} "
+            f"USING ({match}) "
+            f"WITH CHECK ({match})"
+        ),
+    )
 
-    DROP POLICY IF EXISTS {policy} ON {table};
-    CREATE POLICY {policy} ON {table}
-        USING ({org_column} = NULLIF(current_setting('{TENANT_SETTING}', true), '')::uuid)
-        WITH CHECK ({org_column} = NULLIF(current_setting('{TENANT_SETTING}', true), '')::uuid);
-    """
 
-
-def disable_rls(table: str) -> str:
+def disable_rls(table: str) -> tuple[str, ...]:
     """Inverse of `enable_rls`, for a migration's downgrade path."""
-    policy = f"{table}_tenant_isolation"
-    return f"""
-    DROP POLICY IF EXISTS {policy} ON {table};
-    ALTER TABLE {table} NO FORCE ROW LEVEL SECURITY;
-    ALTER TABLE {table} DISABLE ROW LEVEL SECURITY;
-    """
+    return (
+        f"DROP POLICY IF EXISTS {policy_name(table)} ON {table}",
+        f"ALTER TABLE {table} NO FORCE ROW LEVEL SECURITY",
+        f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY",
+    )

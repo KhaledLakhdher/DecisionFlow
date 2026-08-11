@@ -17,7 +17,10 @@ from decisionflow.api.v1.router import api_router
 from decisionflow.core.config import settings
 from decisionflow.core.errors import DecisionFlowError
 from decisionflow.core.logging import configure_logging, get_logger
+from decisionflow.core.ratelimit import close_redis
 from decisionflow.db.session import dispose_engine
+from decisionflow.storage.objects import ensure_bucket
+from decisionflow.worker.queue import close_queue
 
 log = get_logger(__name__)
 
@@ -26,6 +29,14 @@ log = get_logger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
     settings.duckdb_root.mkdir(parents=True, exist_ok=True)
+
+    try:
+        await ensure_bucket()
+    except Exception as exc:
+        # Not fatal: the rest of the API is unaffected, and failing startup
+        # over object storage would take down auth and health checks too.
+        log.warning("api.storage_unavailable", error=str(exc))
+
     log.info(
         "api.startup",
         version=__version__,
@@ -38,6 +49,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     yield
 
+    await close_queue()
+    await close_redis()
     await dispose_engine()
     log.info("api.shutdown")
 

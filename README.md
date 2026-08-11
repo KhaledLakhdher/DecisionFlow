@@ -23,7 +23,7 @@ Milestone 1 — in progress. See [Roadmap](#roadmap).
 | 2 | Data engineering (profile → validate → clean → `clean` layer) | ✅ Complete |
 | 3 | Warehouse (star schema) | ⬜ |
 | 4 | Semantic layer + automatic KPIs | ✅ Complete |
-| 5 | Machine learning (forecast, churn, anomalies) | ⬜ |
+| 5 | Machine learning (forecast, churn, anomalies) | ✅ Complete |
 | 6 | LLM narrative layer + NL→SQL agent | ✅ Complete |
 | 7 | Agent fleet | ⬜ Next |
 
@@ -141,11 +141,22 @@ API docs at http://localhost:8000/docs.
 
 ### 4. Run the worker
 
-Scheduled maintenance and (later) the ingestion pipeline run out of process:
+Ingestion, cleaning and analysis run out of process:
 
 ```bash
 arq decisionflow.worker.main.WorkerSettings
 ```
+
+### 5. Run the frontend
+
+```bash
+cd apps/web
+npm install
+npm run dev
+```
+
+Open http://localhost:3000. All three processes (API, worker, web) need to be
+running — an upload will sit at "Queued" forever without the worker.
 
 ---
 
@@ -169,6 +180,36 @@ Tests share one session-scoped event loop. The SQLAlchemy engine and Redis
 client are module-level singletons, and with pytest-asyncio's default
 function-scoped loop their pooled connections outlive the loop that created
 them — the next test then dies on a closed transport.
+
+### End-to-end
+
+```bash
+cd apps/web
+npm run test:e2e
+```
+
+Drives the real stack — API, worker, database — rather than mocking the
+backend. Mocked E2E tests pass while the product is broken.
+
+Requires the API running with `RATE_LIMIT_ENABLED=false`. The suite signs in
+many times in quick succession from one address, and would otherwise be
+throttled by a control that already has its own unit tests. Never disable it in
+a deployed environment.
+
+Two things worth knowing before extending these tests:
+
+- **`storageState` does not work here.** Refresh tokens rotate, and presenting
+  a consumed one is treated as theft and revokes the family — so a saved
+  session file is spent by the first test that uses it. The `signedIn` fixture
+  logs in per test instead.
+- **`getByText` is case-insensitive substring matching.** `getByText("Total
+  revenue")` also matches the button "What is our total revenue?", so a wait
+  can return against the wrong element and screenshot a half-loaded page. Use
+  test ids or `getByRole` with a name.
+
+Screenshots land in `e2e/.screenshots/` on every run. They are the only thing
+that checks layout — the palette validator checks color, and assertions check
+presence, but neither catches a shifted axis label.
 
 ---
 
@@ -210,6 +251,15 @@ Parsing a 200 MB spreadsheet inside a request handler means a timeout and a
 worker pinned on CPU while other requests queue behind it. Once the bytes are
 in object storage the work is durable and retryable — which is why `POST
 /datasets/{id}/reingest` never asks the customer to upload anything again.
+
+**Interrupted jobs recover themselves.** A worker killed mid-job — a deploy, an
+OOM, a laptop closing — leaves its run on `running` and its dataset on
+`analyzing`, where nothing would ever revisit it: the user sees a permanent
+spinner with no way out. A cron job every ten minutes marks runs older than the
+job timeout as failed, with a message telling the user the file is intact and
+can be re-run. The check is *age*-based rather than "fail everything on
+startup", so a second worker starting cannot kill jobs a healthy first worker
+is still processing.
 
 The uploaded file is never modified. Everything downstream (the `raw` table,
 the future `clean` table, KPIs) is derived, so a bad transform is a re-run
@@ -376,6 +426,68 @@ being queried.
 
 Queries additionally carry a forced row cap and a wall-clock timeout, because
 one generated cross join would otherwise pin a worker thread indefinitely.
+
+### Frontend
+
+Next.js 16 (App Router), React 19, Tailwind v4. Charts are hand-written inline
+SVG rather than a charting library — the mark specification (2px strokes, 4px
+rounded data-ends anchored to the baseline, 2px surface gaps between bars,
+crosshair tooltips) is easier to hit directly than to coax out of a library's
+theming API, and it avoids a dependency for two chart types.
+
+**Colors are validated, not chosen by eye.** The categorical slots pass every
+gate all-pairs in both light and dark modes (worst CVD ΔE 9.2 light / 9.4 dark;
+normal-vision 24.0 / 20.9). Dark mode is a *selected* set of steps for the dark
+surface, not an automatic inversion.
+
+Accessibility decisions that are easy to get wrong:
+
+- **Status is never color alone.** Every severity carries an icon and a
+  screen-reader label; dataset status pairs a dot with the word.
+- **Deltas carry a glyph** (▲/▼) and the words "vs previous", so direction
+  survives for a colorblind reader and in print.
+- **Single-series charts have no legend** — the title names the series. A legend
+  box for one thing is noise.
+- **The y-axis is anchored to zero.** A truncated axis exaggerates change, which
+  on a revenue chart is a way of lying with a true number.
+
+Every KPI tile has a "How is this calculated?" toggle showing its SQL, and every
+AI answer can reveal its query and result rows. An AI-produced figure without
+visible provenance should not be trusted.
+
+### Predictions
+
+The hard part of forecasting in a product like this is refusing to do it. A
+business uploads six months of data and asks about next quarter; fitting a line
+and returning a confident number is the easy, wrong answer. So the method is
+chosen by what the series can support, and thin data is declined:
+
+| History | Behaviour |
+|---|---|
+| < 4 points | **Refused.** Two or three points define a line exactly, leaving no residual variance and therefore a zero-width interval — certainty the data has not earned. |
+| 4–23 points | Linear trend with proper *prediction* intervals (not confidence intervals on the mean). |
+| ≥ 24 points | Holt-Winters, once two full cycles exist to separate seasonality from trend. |
+
+Every forecast carries an interval that widens with distance, and monthly
+projections land on calendar month boundaries — adding a fixed 30.44-day step
+repeatedly drifts, turning the month after May into "May 31".
+
+**Anomalies** are residual-based, not a black box: a point is anomalous when it
+departs from the *trend*, not when it is merely large. December being the
+year's best month is not an anomaly in a growing business. The spread uses
+median absolute deviation rather than standard deviation, because the outliers
+being hunted would otherwise inflate the very threshold meant to catch them.
+
+**Churn** is RFM over transaction history, with two deliberate constraints.
+The label is *derived* — no upload says "this customer churned" — so the cutoff
+(70th percentile of observed recency) is returned alongside the numbers,
+because a churn figure whose definition is hidden cannot be argued with. And
+recency is excluded from the predictors: it defines the label, so including it
+would let the model rediscover the cutoff and report a meaningless ~100%
+accuracy.
+
+Nothing is persisted. Predictions go stale the moment the data changes, so a
+cached one is a wrong one waiting to be shown.
 
 ### Authorization
 

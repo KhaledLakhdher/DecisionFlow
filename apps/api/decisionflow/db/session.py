@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import Session as SyncSession
 from sqlalchemy.orm import SessionTransaction
+from sqlalchemy.pool import NullPool
 
 from decisionflow.core.config import settings
 
@@ -122,6 +123,31 @@ async def untenanted_session() -> AsyncIterator[AsyncSession]:
         yield session
     finally:
         await session.close()
+
+
+@asynccontextmanager
+async def maintenance_session() -> AsyncIterator[AsyncSession]:
+    """A session that deliberately spans every tenant.
+
+    Connects as the owner role, which is a superuser here and therefore not
+    subject to RLS. That is the point: background maintenance has to see rows
+    across all organizations — a stalled ingestion belongs to a tenant nobody
+    is currently authenticated as.
+
+    Reserved for scheduled maintenance. It is never reachable from a request,
+    and anything using it must scope its own writes, because the database will
+    not do it for you here.
+    """
+    maintenance_engine = create_async_engine(
+        settings.migration_database_url, poolclass=NullPool
+    )
+    factory = async_sessionmaker(bind=maintenance_engine, expire_on_commit=False)
+    session = factory()
+    try:
+        yield session
+    finally:
+        await session.close()
+        await maintenance_engine.dispose()
 
 
 async def dispose_engine() -> None:

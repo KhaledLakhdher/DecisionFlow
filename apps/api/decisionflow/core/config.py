@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import quote_plus
 
-from pydantic import SecretStr, computed_field
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # .../apps/api/decisionflow/core/config.py -> repo root is 4 levels up from the
@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     access_token_ttl_minutes: int = 30
     refresh_token_ttl_days: int = 14
     jwt_algorithm: str = "HS256"
+    # Defaults on. Turned off only for end-to-end runs, which sign in many
+    # times in quick succession from one address and would otherwise be
+    # throttled by a control that is already covered by its own unit tests.
+    # Never disable this in a deployed environment.
+    rate_limit_enabled: bool = True
 
     # --- Postgres ---------------------------------------------------------
     postgres_user: str = "decisionflow"
@@ -55,6 +60,11 @@ class Settings(BaseSettings):
     # --- Redis ------------------------------------------------------------
     redis_host: str = "localhost"
     redis_port: int = 6379
+    # Logical database index. The test suite overrides this so its jobs and
+    # rate-limit counters never land in the queue a running worker is draining
+    # — otherwise a dev worker picks up jobs for a test database that has since
+    # been dropped, and fails them noisily.
+    redis_db: int = 0
 
     # --- Object storage ---------------------------------------------------
     s3_endpoint_url: str = "http://localhost:9000"
@@ -68,9 +78,18 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 200 * 1024 * 1024
 
     # --- LLM --------------------------------------------------------------
+    # Verified callable against a live key on 2026-08-09. Note that the models
+    # *list* endpoint is not proof of access: gemini-2.5-flash is still listed
+    # but returns 404 "no longer available to new users" when called, so model
+    # choice here is based on actually invoking each candidate.
     gemini_api_key: SecretStr = SecretStr("")
-    gemini_model: str = "gemini-2.5-flash"
-    gemini_reasoning_model: str = "gemini-2.5-pro"
+    gemini_model: str = "gemini-3.6-flash"
+    # Deliberately also a Flash model. Pro is quota-restricted on the current
+    # key (immediate 429 on every Pro variant), and SQL generation does not
+    # need it. The provider falls back to `gemini_model` if this one is
+    # throttled, so raising this to a Pro model later needs no code change.
+    gemini_reasoning_model: str = "gemini-3.6-flash"
+    gemini_timeout_seconds: int = 60
 
     # --- Frontend ---------------------------------------------------------
     # Kept as a raw string: pydantic-settings tries to JSON-decode env values
@@ -78,12 +97,14 @@ class Settings(BaseSettings):
     # confusing validation error. Parsed by `cors_origin_list` instead.
     cors_origins: str = "http://localhost:3000"
 
-    @computed_field
+    # These are plain properties, never `computed_field`. A computed field is
+    # included in `model_dump()`, which would serialise the fully-formed DSNs —
+    # passwords and all — in cleartext, defeating the SecretStr wrappers above
+    # the moment anything logs or reports the settings object.
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
-    @computed_field
     @property
     def duckdb_root(self) -> Path:
         """Absolute path to the per-workspace DuckDB store."""
@@ -98,13 +119,11 @@ class Settings(BaseSettings):
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
 
-    @computed_field
     @property
     def database_url(self) -> str:
         """DSN used by the API at runtime — the RLS-constrained, non-owner role."""
         return self._dsn(self.app_db_user, self.app_db_password)
 
-    @computed_field
     @property
     def migration_database_url(self) -> str:
         """DSN used by Alembic — the owner role, the only one that may run DDL.
@@ -114,12 +133,10 @@ class Settings(BaseSettings):
         """
         return self._dsn(self.postgres_user, self.postgres_password)
 
-    @computed_field
     @property
     def redis_dsn(self) -> str:
-        return f"redis://{self.redis_host}:{self.redis_port}"
+        return f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}"
 
-    @computed_field
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
@@ -131,7 +148,7 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()  # type: ignore[call-arg]
+    return Settings()
 
 
 settings: Settings = get_settings()

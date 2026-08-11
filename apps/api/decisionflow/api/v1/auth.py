@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request, status
 
 from decisionflow.api.deps import CurrentUserDep, PrincipalDep, SessionDep, client_ip
+from decisionflow.core import ratelimit
 from decisionflow.schemas.auth import (
     AcceptInviteRequest,
     LoginRequest,
@@ -28,6 +29,10 @@ async def register(
     session: SessionDep,
 ) -> TokenPair:
     """Create an account plus its first workspace, and sign the user in."""
+    await ratelimit.enforce(
+        "register:ip", client_ip(request) or "unknown", ratelimit.REGISTER_PER_IP
+    )
+
     user, organization, membership = await auth_service.register(
         session,
         email=payload.email,
@@ -54,9 +59,19 @@ async def register(
 
 @router.post("/login", response_model=TokenPair)
 async def login(payload: LoginRequest, request: Request, session: SessionDep) -> TokenPair:
+    # Both limits are checked before the password is verified, so a throttled
+    # caller learns nothing about whether the account exists.
+    source = client_ip(request) or "unknown"
+    await ratelimit.enforce("login:ip", source, ratelimit.LOGIN_PER_IP)
+    await ratelimit.enforce("login:account", payload.email, ratelimit.LOGIN_PER_ACCOUNT)
+
     user = await auth_service.authenticate(
         session, email=payload.email, password=payload.password
     )
+
+    # A correct password clears the account counter, so someone who fumbled
+    # their password twice is not locked out by their own successful login.
+    await ratelimit.reset("login:account", payload.email)
 
     # Default to the workspace the user joined first; they can switch after.
     memberships = await auth_service.list_memberships(session, user.id)
@@ -150,6 +165,12 @@ async def accept_invite(
     session: SessionDep,
 ) -> TokenPair:
     """Redeem an invitation, creating the account if this is a new user."""
+    # Invite tokens are 256-bit, but throttling denies an attacker unlimited
+    # guesses regardless.
+    await ratelimit.enforce(
+        "invite:ip", client_ip(request) or "unknown", ratelimit.INVITE_ACCEPT_PER_IP
+    )
+
     user, membership = await auth_service.accept_invitation(
         session,
         token=payload.token,

@@ -27,6 +27,17 @@ dependencies = [
     "polars>=1.43",
     "duckdb>=1.5",
     "fastexcel>=0.12",
+    # The Arrow bridge between Polars and DuckDB. Polars does not vendor it,
+    # and every hand-off between the two — including DuckDB's own Polars
+    # support — routes through `to_arrow()`. Large, but it is what makes the
+    # transfer zero-copy instead of a row-by-row Python round trip.
+    "pyarrow>=18.0",
+    # DuckDB imports pytz lazily when it meets a timezone-aware timestamp, and
+    # raises "Required module 'pytz' failed to import" if it is absent. It is
+    # not declared by duckdb itself, so a real CSV carrying an ISO timestamp
+    # with an offset ("2017-01-18T20:58:58Z") fails at cleaning time on an
+    # otherwise complete install.
+    "pytz>=2024.1",
 
     # --- Auth ---
     "argon2-cffi>=25.1",
@@ -36,6 +47,14 @@ dependencies = [
     "arq>=0.28",
     "redis[hiredis]>=5.3",
     "boto3>=1.43",
+
+    # --- Machine learning ---
+    "scikit-learn>=1.6",
+    # Brings pandas in transitively. That is tolerated — the earlier decision
+    # was against a third data representation in *our* code, not against the
+    # library existing in the tree — and enforced by the flake8-tidy-imports
+    # ban below rather than left to discipline.
+    "statsmodels>=0.14",
 
     # --- LLM ---
     "google-genai>=2.17",
@@ -65,22 +84,57 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP", "ASYNC", "S", "C4", "SIM", "RUF"]
+select = ["E", "F", "I", "B", "UP", "ASYNC", "S", "C4", "SIM", "RUF", "TID"]
 ignore = [
     "S101",  # assert is fine in tests
     "B008",  # FastAPI Depends() in defaults is the documented idiom
 ]
 
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"pandas".msg = """\
+Use Polars and DuckDB for the data plane. pandas is present only as a \
+transitive dependency of statsmodels; importing it directly reintroduces a \
+third data representation and the pandas 3.0 API churn this project avoids."""
+
 [tool.ruff.lint.per-file-ignores]
 "alembic/*" = ["E501"]
 "tests/*" = ["S105", "S106"]
+# These build SQL from module-level constants and tmp_path fixtures, never user
+# input. Application code gets no such exemption.
+"tests/test_rls.py" = ["S105", "S106", "S608"]
+"tests/test_sqlguard.py" = ["S105", "S106", "S608"]
+# verify_rls.py builds DDL around a module-level constant table name, never
+# user input. Application code gets no such exemption.
+"scripts/verify_rls.py" = ["S608"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# One event loop for the entire session. The SQLAlchemy engine and the Redis
+# client are module-level singletons created at import; with the default
+# function-scoped loop their pooled connections outlive the loop that made
+# them, and the next test dies on a closed transport
+# ("'NoneType' object has no attribute 'send'").
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 
 [tool.mypy]
 python_version = "3.12"
 warn_unused_ignores = true
 disallow_untyped_defs = true
 plugins = ["pydantic.mypy"]
+
+# boto3/botocore ship no type information. The typed alternative (boto3-stubs)
+# is a large dependency for the handful of S3 calls in storage/objects.py,
+# which wraps them behind its own typed interface anyway.
+[[tool.mypy.overrides]]
+module = ["boto3.*", "botocore.*"]
+ignore_missing_imports = true
+
+# The scientific stack ships no type information. scipy-stubs exists but
+# covers a fraction of the surface and lags releases; sklearn and statsmodels
+# have none at all. Our own wrappers around them are fully typed, which is
+# where the value is.
+[[tool.mypy.overrides]]
+module = ["scipy.*", "sklearn.*", "statsmodels.*"]
+ignore_missing_imports = true

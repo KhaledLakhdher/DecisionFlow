@@ -11,9 +11,12 @@ import re
 import secrets
 import unicodedata
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
-from sqlalchemy import func, select
+from sqlalchemy import CursorResult, delete, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -60,18 +63,39 @@ def _slugify(value: str) -> str:
     return slug[:60] or "workspace"
 
 
-async def _unique_slug(session: AsyncSession, base: str) -> str:
-    """Append a short random suffix until the slug is free.
+def _candidate_slugs(base: str, attempts: int = 8) -> Iterator[str]:
+    """The bare slug first, then progressively randomised variants.
 
-    Random rather than an incrementing counter so the slug does not disclose
-    how many organizations share a name.
+    Random suffixes rather than an incrementing counter, so a slug does not
+    disclose how many organizations share a name.
     """
-    slug = _slugify(base)
-    for _ in range(10):
-        exists = await session.scalar(select(Organization.id).where(Organization.slug == slug))
-        if exists is None:
-            return slug
-        slug = f"{_slugify(base)}-{secrets.token_hex(3)}"
+    root = _slugify(base)
+    yield root
+    for _ in range(attempts - 1):
+        yield f"{root}-{secrets.token_hex(3)}"
+
+
+async def _insert_organization(session: AsyncSession, name: str) -> Organization:
+    """Insert an organization, resolving slug collisions optimistically.
+
+    Checking `SELECT ... WHERE slug = ?` before inserting is a time-of-check to
+    time-of-use race: two concurrent requests both see the slug free and the
+    loser gets an IntegrityError surfacing as a 500. Instead we attempt the
+    insert and let the unique constraint — the only authority that is actually
+    race-free — tell us to try again.
+
+    A SAVEPOINT wraps each attempt so a failed insert does not poison the
+    caller's surrounding transaction.
+    """
+    for slug in _candidate_slugs(name):
+        try:
+            async with session.begin_nested():
+                organization = Organization(name=name.strip(), slug=slug)
+                session.add(organization)
+                await session.flush()
+            return organization
+        except IntegrityError:
+            continue
     raise ConflictError("Could not allocate a unique workspace slug.")
 
 
@@ -113,11 +137,8 @@ async def register(
         full_name=full_name.strip(),
         password_hash=hash_password(password),
     )
-    organization = Organization(
-        name=organization_name.strip(),
-        slug=await _unique_slug(session, organization_name),
-    )
-    session.add_all([user, organization])
+    session.add(user)
+    organization = await _insert_organization(session, organization_name)
     await session.flush()  # populate server-generated ids
 
     membership = Membership(org_id=organization.id, user_id=user.id, role=Role.OWNER)
@@ -298,6 +319,35 @@ async def revoke_refresh_token(session: AsyncSession, *, refresh_token: str) -> 
         await session.commit()
 
 
+async def purge_stale_refresh_tokens(session: AsyncSession, *, retain_days: int = 30) -> int:
+    """Delete refresh tokens that can no longer authenticate anything.
+
+    Without this the table grows without bound — every login appends a row and
+    nothing ever removes one. Expired and revoked tokens are kept for
+    `retain_days` first, because a revoked token showing up again is the signal
+    that a refresh token leaked, and deleting the record immediately would
+    discard that evidence.
+
+    Returns the number of rows removed.
+    """
+    cutoff = datetime.now(UTC) - timedelta(days=retain_days)
+    # session.execute() is typed as returning Result; a DML statement actually
+    # yields a CursorResult, which is what carries rowcount.
+    result = cast(
+        "CursorResult[Any]",
+        await session.execute(
+            delete(RefreshToken).where(
+                or_(
+                    RefreshToken.expires_at < cutoff,
+                    RefreshToken.revoked_at.is_not(None) & (RefreshToken.revoked_at < cutoff),
+                )
+            )
+        ),
+    )
+    await session.commit()
+    return result.rowcount or 0
+
+
 async def revoke_all_user_tokens(session: AsyncSession, *, user_id: uuid.UUID) -> None:
     tokens = await session.scalars(
         select(RefreshToken).where(
@@ -316,8 +366,7 @@ async def revoke_all_user_tokens(session: AsyncSession, *, user_id: uuid.UUID) -
 async def create_organization(
     session: AsyncSession, *, user: User, name: str
 ) -> tuple[Organization, Membership]:
-    organization = Organization(name=name.strip(), slug=await _unique_slug(session, name))
-    session.add(organization)
+    organization = await _insert_organization(session, name)
     await session.flush()
 
     membership = Membership(org_id=organization.id, user_id=user.id, role=Role.OWNER)
@@ -435,8 +484,15 @@ async def change_member_role(
     org_id: uuid.UUID,
     target_user_id: uuid.UUID,
     new_role: Role,
+    actor_role: Role,
 ) -> Membership:
-    """Change a member's role, refusing to leave the workspace ownerless."""
+    """Change a member's role, refusing to leave the workspace ownerless.
+
+    Ownership is only ever touched by an owner. Both directions matter: an
+    admin promoting someone to owner is escalation, and an admin demoting an
+    existing owner is a hostile takeover. Enforced here rather than in the
+    router so the rule sits beside the last-owner invariant it interacts with.
+    """
     membership = await session.scalar(
         select(Membership).where(
             Membership.org_id == org_id, Membership.user_id == target_user_id
@@ -444,6 +500,10 @@ async def change_member_role(
     )
     if membership is None:
         raise NotFoundError("That person is not a member of this workspace.")
+
+    touches_ownership = membership.role is Role.OWNER or new_role is Role.OWNER
+    if touches_ownership and actor_role is not Role.OWNER:
+        raise PermissionDeniedError("Only an owner can change an owner's role.")
 
     if membership.role is Role.OWNER and new_role is not Role.OWNER:
         owner_count = await session.scalar(
@@ -457,7 +517,71 @@ async def change_member_role(
     membership.role = new_role
     await session.commit()
 
-    # The old access token still carries the previous role until it expires;
-    # dropping their refresh tokens bounds that window to the access TTL.
+    # Workspace-scoped endpoints read the live role, so the demotion binds on
+    # the target's next request. Dropping their refresh tokens additionally
+    # stops a stale role claim outliving this change in any token they hold.
     await revoke_all_user_tokens(session, user_id=target_user_id)
     return membership
+
+
+async def remove_member(
+    session: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    target_user_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    actor_role: Role,
+) -> None:
+    """Remove someone from a workspace.
+
+    Covers two cases with one set of invariants:
+
+      * Removing yourself is *leaving*, and any member may do it.
+      * Removing someone else requires admin, and only an owner may remove
+        another owner — otherwise an admin could evict the people above them.
+
+    In both cases the last owner cannot go, or the workspace would be left with
+    nobody able to administer it.
+    """
+    membership = await session.scalar(
+        select(Membership).where(
+            Membership.org_id == org_id, Membership.user_id == target_user_id
+        )
+    )
+    if membership is None:
+        raise NotFoundError("That person is not a member of this workspace.")
+
+    is_self = target_user_id == actor_user_id
+
+    if not is_self:
+        if not actor_role.satisfies(Role.ADMIN):
+            raise PermissionDeniedError("This action requires the admin role or higher.")
+        if membership.role is Role.OWNER and actor_role is not Role.OWNER:
+            raise PermissionDeniedError("Only an owner can remove another owner.")
+
+    if membership.role is Role.OWNER:
+        owner_count = await session.scalar(
+            select(func.count())
+            .select_from(Membership)
+            .where(Membership.org_id == org_id, Membership.role == Role.OWNER)
+        )
+        if (owner_count or 0) <= 1:
+            raise ValidationError(
+                "A workspace must always have at least one owner. "
+                "Transfer ownership before removing this member."
+            )
+
+    await session.delete(membership)
+    await session.commit()
+
+    # Their tokens may still name this workspace. Workspace endpoints now
+    # re-check membership on every request so those tokens can no longer reach
+    # tenant data, but revoking refresh tokens stops them minting new ones.
+    await revoke_all_user_tokens(session, user_id=target_user_id)
+
+    log.info(
+        "auth.member_removed",
+        org_id=str(org_id),
+        removed_user_id=str(target_user_id),
+        self_service=is_self,
+    )

@@ -72,11 +72,21 @@ async def ask(
     dataset: Dataset,
     columns: list[DatasetColumn],
     semantics: DatasetSemantics,
+    table: str | None = None,
+    extra_columns: list[tuple[str, str]] | None = None,
 ) -> AgentAnswer:
-    """Answer a natural-language question about one dataset."""
-    table = f"{warehouse.CLEAN_SCHEMA}.{dataset.slug}"
-    schema_block = prompts.describe_dataset(dataset, columns, semantics, table)
-    allowed = {table, dataset.slug}
+    """Answer a natural-language question about one dataset.
+
+    `table` may be a star view rather than the plain cleaned table, in which
+    case `extra_columns` describes the dimension columns the join brings in.
+    Those columns do not exist on the dataset itself, so without them the model
+    has no way to know it can group by one.
+    """
+    table = table or f"{warehouse.CLEAN_SCHEMA}.{dataset.slug}"
+    schema_block = prompts.describe_dataset(
+        dataset, columns, semantics, table, extra_columns=extra_columns
+    )
+    allowed = {table, dataset.slug, table.split(".")[-1]}
 
     correction: str | None = None
     corrections: list[str] = []

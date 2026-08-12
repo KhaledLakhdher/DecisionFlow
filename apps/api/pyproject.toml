@@ -103,6 +103,7 @@ third data representation and the pandas 3.0 API churn this project avoids."""
 # input. Application code gets no such exemption.
 "tests/test_rls.py" = ["S105", "S106", "S608"]
 "tests/test_sqlguard.py" = ["S105", "S106", "S608"]
+"tests/test_modelling.py" = ["S105", "S106", "S608"]
 # verify_rls.py builds DDL around a module-level constant table name, never
 # user input. Application code gets no such exemption.
 "scripts/verify_rls.py" = ["S608"]

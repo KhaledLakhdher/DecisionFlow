@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from decisionflow.api.v1 import assistant, auth, datasets, health, orgs, predictions
+from decisionflow.api.v1 import (
+    assistant,
+    auth,
+    datasets,
+    health,
+    modelling,
+    orgs,
+    predictions,
+)
 
 api_router = APIRouter()
 api_router.include_router(health.router)
@@ -12,4 +20,5 @@ api_router.include_router(auth.router)
 api_router.include_router(orgs.router)
 api_router.include_router(datasets.router)
 api_router.include_router(predictions.router)
+api_router.include_router(modelling.router)
 api_router.include_router(assistant.router)

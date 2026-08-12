@@ -25,6 +25,7 @@ from decisionflow.db.models.ingestion import (
 from decisionflow.llm import agent
 from decisionflow.services import analytics as analytics_service
 from decisionflow.services import ingestion as ingestion_service
+from decisionflow.services import modelling as modelling_service
 
 log = get_logger(__name__)
 
@@ -122,11 +123,24 @@ async def ask(
     await session.flush()
 
     semantics = analytics_service.load_semantics(dataset.columns)
+
+    # Point the agent at the star view when one exists, so "revenue by customer
+    # country" can be answered — the country lives on a different uploaded file
+    # and is unreachable from the fact table alone.
+    table = await modelling_service.star_table_for(
+        session, org_id=org_id, dataset=dataset
+    )
+    joined_columns = await modelling_service.star_columns(
+        session, org_id=org_id, dataset=dataset
+    )
+
     answer = await agent.ask(
         question=question,
         dataset=dataset,
         columns=list(dataset.columns),
         semantics=semantics,
+        table=table,
+        extra_columns=joined_columns,
     )
 
     assistant_message = Message(

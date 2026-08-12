@@ -23,8 +23,10 @@ from typing import Any
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -101,6 +103,20 @@ class RunStatus(enum.StrEnum):
     FAILED = "failed"
 
 
+class TableRole(enum.StrEnum):
+    """A dataset's place in a dimensional model.
+
+    Derived from the reference graph rather than declared: a table other tables
+    point *at* is a dimension, a table that points *out* and carries measures is
+    a fact. UNKNOWN covers standalone uploads, which is most of them — a single
+    CSV is not a star schema and should not be dressed up as one.
+    """
+
+    FACT = "fact"
+    DIMENSION = "dimension"
+    UNKNOWN = "unknown"
+
+
 class IssueSeverity(enum.StrEnum):
     """How much a data quality finding should worry the reader.
 
@@ -151,6 +167,11 @@ column_type_enum = Enum(
 run_status_enum = Enum(
     RunStatus,
     name="run_status",
+    values_callable=lambda enum_cls: [m.value for m in enum_cls],
+)
+table_role_enum = Enum(
+    TableRole,
+    name="table_role",
     values_callable=lambda enum_cls: [m.value for m in enum_cls],
 )
 issue_severity_enum = Enum(
@@ -248,6 +269,12 @@ class Dataset(OrgScopedMixin, UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     created_by_id: Mapped[uuid.UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+    # Position in the dimensional model, derived from confirmed relationships.
+    # Defaults to UNKNOWN because a lone upload is not a star schema.
+    table_role: Mapped[TableRole] = mapped_column(
+        table_role_enum, nullable=False, server_default=text("'unknown'")
     )
 
     source: Mapped[DataSource] = relationship(back_populates="datasets", lazy="raise")
@@ -384,6 +411,65 @@ class IngestionRun(OrgScopedMixin, UUIDPrimaryKeyMixin, TimestampMixin, Base):
         if self.finished_at is None:
             return None
         return (self.finished_at - self.started_at).total_seconds()
+
+
+class DatasetRelationship(OrgScopedMixin, UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """A foreign-key relationship between two datasets.
+
+    Detected, not declared — a CSV carries no constraints — so every row has a
+    confidence and an explanation, and a human can confirm or reject it. An
+    inferred join that silently produces wrong totals is worse than no join, so
+    only confirmed relationships are used to build the star view.
+
+    Direction matters: `from` is the many side (the fact's foreign key), `to` is
+    the one side (the dimension's key).
+    """
+
+    __tablename__ = "dataset_relationships"
+
+    from_dataset_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("datasets.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    from_column: Mapped[str] = mapped_column(String(300), nullable=False)
+
+    to_dataset_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("datasets.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    to_column: Mapped[str] = mapped_column(String(300), nullable=False)
+
+    # Share of the many side's values that exist on the one side. 1.0 means
+    # every foreign key resolves; lower values mean orphans, which is a data
+    # quality signal as much as a confidence one.
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    # Null until a human decides. Detection proposes; it never assumes.
+    confirmed: Mapped[bool | None] = mapped_column(Boolean)
+    rationale: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
+
+    from_dataset: Mapped[Dataset] = relationship(
+        foreign_keys=[from_dataset_id], lazy="raise"
+    )
+    to_dataset: Mapped[Dataset] = relationship(foreign_keys=[to_dataset_id], lazy="raise")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "from_dataset_id",
+            "from_column",
+            "to_dataset_id",
+            "to_column",
+            name="uq_dataset_relationships_edge",
+        ),
+    )
+
+    @property
+    def is_usable(self) -> bool:
+        """Only a confirmed relationship may shape a query."""
+        return self.confirmed is True
 
 
 class Kpi(OrgScopedMixin, UUIDPrimaryKeyMixin, TimestampMixin, Base):

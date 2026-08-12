@@ -21,7 +21,7 @@ Milestone 1 — in progress. See [Roadmap](#roadmap).
 | — | Tenancy: orgs, users, roles, invites, RLS | ✅ Complete |
 | 1 | Data ingestion (CSV/Excel → object storage → DuckDB `raw`) | ✅ Complete |
 | 2 | Data engineering (profile → validate → clean → `clean` layer) | ✅ Complete |
-| 3 | Warehouse (star schema) | ⬜ |
+| 3 | Warehouse (star schema) | ✅ Complete |
 | 4 | Semantic layer + automatic KPIs | ✅ Complete |
 | 5 | Machine learning (forecast, churn, anomalies) | ✅ Complete |
 | 6 | LLM narrative layer + NL→SQL agent | ✅ Complete |
@@ -454,6 +454,40 @@ Accessibility decisions that are easy to get wrong:
 Every KPI tile has a "How is this calculated?" toggle showing its SQL, and every
 AI answer can reveal its query and result rows. An AI-produced figure without
 visible provenance should not be trusted.
+
+### Dimensional modelling
+
+A CSV carries no foreign keys, so the joins that make a star schema have to be
+inferred — and a wrong join is the most dangerous failure in the product. It
+does not error; it multiplies rows and reports inflated revenue that looks
+entirely plausible. So **detection proposes and a person confirms.** Nothing
+joins itself.
+
+Three signals, in order of authority:
+
+1. **Value containment** — what share of the many side's values exist on the
+   one side. This is the evidence; names can lie, data cannot.
+2. **Uniqueness of the target** — a foreign key must point at something unique.
+   A repeating target means many-to-many, which fans out rows, so it is
+   rejected outright rather than scored down.
+3. **Name similarity** — only ever a tie-breaker. Two unrelated tables both
+   having `id` is the most common false positive there is.
+
+Candidates are pruned through the semantic layer (identifier and dimension
+columns only) and gated on type family, which turns an O(columns²) sweep into a
+handful of comparisons. Below five distinct target values, containment is weak
+evidence — almost any column falls inside a three-value set by chance — so a
+matching name becomes *required* rather than a bonus.
+
+Confirmed edges build one view per fact: `star.orders` is orders LEFT JOINed to
+its dimensions, with dimension columns prefixed (`customers_country`). The
+prefix prevents a dimension's `country` silently shadowing the fact's own, and
+LEFT (never INNER) keeps a transaction whose key is missing from the dimension
+— dropping it would quietly reduce reported revenue.
+
+The analyst agent is pointed at the star view when one exists, and its prompt
+names the joined columns, so *"revenue by customer country"* is answerable when
+country was uploaded in a different file.
 
 ### Predictions
 

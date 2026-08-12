@@ -88,7 +88,12 @@ def _format_column(column: DatasetColumn) -> str:
 
 
 def describe_dataset(
-    dataset: Dataset, columns: list[DatasetColumn], semantics: DatasetSemantics, table: str
+    dataset: Dataset,
+    columns: list[DatasetColumn],
+    semantics: DatasetSemantics,
+    table: str,
+    *,
+    extra_columns: list[tuple[str, str]] | None = None,
 ) -> str:
     """The schema block shared by every prompt about this dataset."""
     lines = [
@@ -122,6 +127,17 @@ def describe_dataset(
         lines += [
             "",
             f"Unusable (empty or single-valued), do not use: {', '.join(ignored)}",
+        ]
+
+    if extra_columns:
+        # These live only on the joined view. Listing them is what makes
+        # "revenue by customer country" answerable when country was uploaded
+        # in a separate file — the model cannot infer a column it never sees.
+        lines += [
+            "",
+            "Columns joined in from related tables (already available on "
+            f"{table}, no JOIN needed):",
+            *(f"  - {name} — {description}" for name, description in extra_columns),
         ]
 
     return "\n".join(lines)

@@ -11,6 +11,7 @@ from decisionflow.db.models.ingestion import (
     DataQualityIssue,
     Dataset,
     DatasetColumn,
+    DatasetRelationship,
     DatasetStatus,
     DataSource,
     IngestionRun,
@@ -20,6 +21,7 @@ from decisionflow.db.models.ingestion import (
     Message,
     RunStatus,
     SourceKind,
+    TableRole,
 )
 from decisionflow.db.models.tenancy import (
     Invitation,
@@ -37,6 +39,7 @@ __all__ = [
     "DataSource",
     "Dataset",
     "DatasetColumn",
+    "DatasetRelationship",
     "DatasetStatus",
     "IngestionRun",
     "Invitation",
@@ -50,5 +53,6 @@ __all__ = [
     "Role",
     "RunStatus",
     "SourceKind",
+    "TableRole",
     "User",
 ]

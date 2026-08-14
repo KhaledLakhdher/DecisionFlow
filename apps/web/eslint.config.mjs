@@ -12,6 +12,11 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Playwright specs are not React. The React rules misread Playwright's
+    // fixture callback argument — also named `use` — as the React `use` hook
+    // and reject it for being called outside a component.
+    "e2e/**",
+    "playwright.config.ts",
   ]),
 ]);
 

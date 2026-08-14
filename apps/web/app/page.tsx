@@ -36,7 +36,10 @@ export default function DatasetsPage() {
     }
   }, []);
 
+  // `refresh` sets state only after awaiting the network. See the dataset page
+  // for the fuller note on why the rule misreads this.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (me) void refresh();
   }, [me, refresh]);
 

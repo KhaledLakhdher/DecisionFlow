@@ -218,6 +218,85 @@ export type Preview = {
   total_rows: number | null;
 };
 
+/** Which prediction panels this dataset's shape can support. */
+export type Capabilities = {
+  forecast: boolean;
+  anomalies: boolean;
+  churn: boolean;
+  dimensions: boolean;
+};
+
+export type Forecast = {
+  measure: string;
+  grain: string;
+  method: string;
+  confidence: number;
+  rationale: string;
+  history_points: number;
+  noise_ratio: number | null;
+  history: { period: string; value: number | null }[];
+  points: { period: string; value: number; lower: number; upper: number }[];
+};
+
+export type Anomalies = {
+  measure: string;
+  grain: string;
+  periods_examined: number;
+  anomalies: {
+    period: string;
+    value: number;
+    expected: number;
+    deviation_ratio: number;
+    direction: "above" | "below";
+    severity: "warning" | "serious";
+    message: string;
+  }[];
+};
+
+export type Churn = {
+  definition: string;
+  cutoff_days: number;
+  customers: number;
+  lapsed: number;
+  lapsed_rate: number;
+  accuracy: number | null;
+  drivers: {
+    feature: string;
+    label: string;
+    coefficient: number;
+    direction: string;
+  }[];
+  at_risk: {
+    customer: string;
+    risk: number;
+    band: "high" | "medium" | "low";
+    recency_days: number;
+    frequency: number;
+    monetary: number;
+    reason: string;
+  }[];
+};
+
+export type DataModel = {
+  tables: {
+    dataset_id: string;
+    name: string;
+    table: string;
+    role: "fact" | "dimension" | "unknown";
+    rows: number | null;
+  }[];
+  relationships: {
+    id: string;
+    from_table: string | null;
+    from_column: string;
+    to_table: string | null;
+    to_column: string;
+    confidence: number;
+    confirmed: boolean | null;
+    rationale: string;
+  }[];
+};
+
 export type Answer = {
   conversation_id: string;
   answer: string;
@@ -269,6 +348,20 @@ export const api = {
     ),
   preview: (id: string, layer: "clean" | "raw" = "clean") =>
     request<Preview>(`/datasets/${id}/preview?layer=${layer}&limit=25`),
+
+  capabilities: (id: string) => request<Capabilities>(`/datasets/${id}/capabilities`),
+  forecast: (id: string, horizon = 3) =>
+    request<Forecast>(`/datasets/${id}/forecast?horizon=${horizon}`),
+  anomalies: (id: string) => request<Anomalies>(`/datasets/${id}/anomalies`),
+  churn: (id: string) => request<Churn>(`/datasets/${id}/churn`),
+
+  model: () => request<DataModel>("/model"),
+  detectRelationships: () => request<unknown>("/model/detect", { method: "POST" }),
+  decideRelationship: (id: string, confirmed: boolean) =>
+    request<{ model: DataModel }>(`/model/relationships/${id}`, {
+      method: "PATCH",
+      body: { confirmed },
+    }),
 
   ask: (id: string, question: string, conversationId?: string) =>
     request<Answer>(`/datasets/${id}/ask`, {

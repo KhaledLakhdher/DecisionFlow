@@ -20,8 +20,13 @@ import { expect, test } from "./fixtures";
  */
 async function openDashboard(page: Page) {
   await page.goto("/");
-  await page.getByTestId("dataset-name").first().click();
+  // The fact table — the one with KPIs, a forecast and dimensions to join.
+  await page.getByTestId("dataset-name").filter({ hasText: "orders" }).click();
   await expect(page.getByTestId("kpi-tile").first()).toBeVisible({ timeout: 60_000 });
+}
+
+async function openTab(page: Page, name: string) {
+  await page.getByRole("tab", { name: new RegExp(name, "i") }).click();
 }
 
 test("the dashboard shows generated KPIs", async ({ signedIn: page }) => {
@@ -73,10 +78,11 @@ test("KPI tiles expose the SQL behind each number", async ({ signedIn: page }) =
   await page.screenshot({ path: "e2e/.screenshots/04-kpi-sql.png", fullPage: true });
 });
 
-test("the quality report explains what was cleaned", async ({ signedIn: page }) => {
+test("the quality tab explains what was cleaned", async ({ signedIn: page }) => {
   await openDashboard(page);
+  await openTab(page, "Quality");
 
-  await expect(page.getByText("Data quality")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Data quality" })).toBeVisible();
   await expect(page.getByText("What was cleaned")).toBeVisible();
 
   // "duplicate" appears twice by design — once as a finding, once as the
@@ -87,15 +93,43 @@ test("the quality report explains what was cleaned", async ({ signedIn: page }) 
   await page.screenshot({ path: "e2e/.screenshots/05-quality.png", fullPage: true });
 });
 
-test("the cleaned data table is rendered", async ({ signedIn: page }) => {
+test("tab labels advertise what is behind them", async ({ signedIn: page }) => {
+  // The whole cost of a tab is that it hides content; the count is the signal
+  // that makes it worth clicking.
   await openDashboard(page);
+
+  const predictions = page.getByRole("tab", { name: /predictions/i });
+  const quality = page.getByRole("tab", { name: /quality/i });
+
+  await expect(predictions).toContainText(/\d/);
+  await expect(quality).toContainText(/\d/);
+});
+
+test("tabs are keyboard navigable", async ({ signedIn: page }) => {
+  await openDashboard(page);
+
+  await page.getByRole("tab", { name: /overview/i }).focus();
+  await page.keyboard.press("ArrowRight");
+
+  await expect(page.getByRole("tab", { name: /predictions/i })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+});
+
+test("the data tab shows the schema and cleaned rows", async ({ signedIn: page }) => {
+  await openDashboard(page);
+  await openTab(page, "Data");
 
   // Role + name, not getByText: text matching is case-insensitive substring,
   // so "Cleaned data" also matches the chat blurb "...querying your cleaned
   // data...". This bit three separate assertions in this file.
+  await expect(page.getByRole("heading", { name: "Columns" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Cleaned data" })).toBeVisible();
   // Currency text became a number, so the raw "$" form must be gone.
   await expect(page.getByRole("table").last()).not.toContainText("$1,200.00");
+
+  await page.screenshot({ path: "e2e/.screenshots/09-data-tab.png", fullPage: true });
 });
 
 test("dark mode uses its own selected palette", async ({ signedIn: page }) => {
@@ -110,11 +144,10 @@ test("dark mode uses its own selected palette", async ({ signedIn: page }) => {
 
   // Asserted immediately before the screenshot, not just on arrival, so a
   // half-rendered page cannot be captured as if it were the finished article.
+  // Overview content only — the data table now lives behind the Data tab.
   await expect(page.locator('[data-kpi="total_revenue"]')).toBeVisible();
-  // Role + name, not getByText: text matching is case-insensitive substring,
-  // so "Cleaned data" also matches the chat blurb "...querying your cleaned
-  // data...". This bit three separate assertions in this file.
-  await expect(page.getByRole("heading", { name: "Cleaned data" })).toBeVisible();
+  await expect(page.getByTestId("history-series").or(page.locator("svg path[stroke]").first()))
+    .toBeVisible();
 
   await page.screenshot({ path: "e2e/.screenshots/06-dark-mode.png", fullPage: true });
 });

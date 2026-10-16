@@ -46,6 +46,86 @@ You are a business analyst explaining figures to a non-technical executive.
 """
 
 
+PLANNER_SYSTEM_INSTRUCTION = """\
+You are the lead analyst deciding which of your specialists to put on a \
+question. You do not answer it yourself.
+
+- Choose only specialists whose findings would genuinely inform the question.
+- Every specialist you choose costs time and money, so choose the fewest that \
+will do.
+- Only choose from the specialists offered. Ones the data cannot support are \
+already excluded from the list.
+- Prefer the specialist that answers the question directly over one that \
+provides background.
+"""
+
+BRIEF_SYSTEM_INSTRUCTION = """\
+You are a business analyst writing to a busy owner who is not technical.
+
+- Lead with what matters, in one sentence.
+- Use only the figures in the findings. Never invent, extrapolate, or round \
+in a way that changes the meaning.
+- Where a finding says a change is broad-based, say that plainly. Do not \
+manufacture a single cause.
+- Where a finding is a refusal or an error, either leave it out or state the \
+limitation honestly. Never paper over it.
+- Recommendations must follow from the findings in front of you. If the \
+findings do not support a recommendation, give fewer — or none.
+- No filler, no restating the question, no describing your own process.
+"""
+
+
+def build_plan_prompt(*, question: str, roster: list[tuple[str, str]]) -> str:
+    """Prompt for choosing which specialists to run."""
+    lines = ["Available specialists:"]
+    lines += [f"  - {name}: {description}" for name, description in roster]
+    lines += [
+        "",
+        f"Question: {question}",
+        "",
+        "Choose the specialists to run. Respond with JSON: "
+        '{"specialists": ["name", ...], "reasoning": "one sentence"}.',
+    ]
+    return "\n".join(lines)
+
+
+def build_brief_prompt(
+    *,
+    dataset: Dataset,
+    findings: list[dict[str, Any]],
+    question: str | None = None,
+) -> str:
+    """Prompt for synthesising specialist findings into a brief.
+
+    Findings arrive already computed. The model is being asked to phrase and
+    prioritise them, never to derive a number — which is why every figure it
+    could possibly need is in the block below.
+    """
+    lines = [f'Dataset: "{dataset.name}"', ""]
+
+    if question:
+        lines += [f"The owner asked: {question}", ""]
+
+    lines.append("Findings from your specialists:")
+    for finding in findings:
+        lines.append("")
+        lines.append(f"[{finding.get('specialist')}] {finding.get('headline', '')}")
+        detail = finding.get("detail")
+        if detail:
+            lines.append(json.dumps(detail, indent=2, default=str))
+
+    lines += [
+        "",
+        "Write the brief. Respond with JSON: "
+        '{"headline": "one sentence", "narrative": "2-4 sentences", '
+        '"recommendations": [{"action": "...", "rationale": "...", '
+        '"priority": "high|medium|low"}]}.',
+    ]
+    if question:
+        lines.append("The narrative must answer what was asked.")
+    return "\n".join(lines)
+
+
 def _format_column(column: DatasetColumn) -> str:
     """One line describing a column, as densely as is useful."""
     profile: dict[str, Any] = column.profile or {}

@@ -7,8 +7,10 @@ import {
   RequestError,
   type Anomalies,
   type Breakdown,
+  type Briefing,
   type Churn,
   type DatasetDetail,
+  type FleetCapability,
   type Forecast,
   type Kpi,
   type Preview,
@@ -18,6 +20,7 @@ import {
 import { useRequireAuth } from "@/lib/auth";
 import { AppShell } from "@/components/AppShell";
 import { BarChart } from "@/components/BarChart";
+import { BriefingPanel } from "@/components/BriefingPanel";
 import { Chat } from "@/components/Chat";
 import { ChurnPanel } from "@/components/ChurnPanel";
 import { ForecastChart } from "@/components/ForecastChart";
@@ -59,6 +62,10 @@ export default function DatasetPage({ params }: { params: Promise<{ id: string }
   const [summary, setSummary] = useState<string | null>(null);
   const [summaryBusy, setSummaryBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [roster, setRoster] = useState<FleetCapability | null>(null);
+  const [briefing, setBriefing] = useState<Briefing | null>(null);
+  const [briefingBusy, setBriefingBusy] = useState(false);
+  const [briefingError, setBriefingError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -73,13 +80,24 @@ export default function DatasetPage({ params }: { params: Promise<{ id: string }
       // `caps` gates the prediction fetches below rather than being stored:
       // nothing renders from it directly, so keeping it in state would only
       // add a render.
-      const [q, p, caps] = await Promise.all([
+      const [q, p, caps, fleet] = await Promise.all([
         api.quality(id).catch(() => null),
         api.preview(id).catch(() => null),
         api.capabilities(id).catch(() => null),
+        api.fleet(id).catch(() => null),
       ]);
       setQuality(q);
       setPreview(p);
+      // Which specialists exist for this dataset, so the panel can say what a
+      // briefing would cover before anyone spends model calls finding out.
+      setRoster(fleet);
+
+      // The most recent brief, if one was ever run. Loading it is free; running
+      // a new one is not, so it is never triggered automatically.
+      const history = await api.briefings(id).catch(() => null);
+      if (history?.length) {
+        setBriefing(await api.briefing(id, history[0].id).catch(() => null));
+      }
 
       // Absence is expected for these — a dataset with no date column has no
       // time series — so their failure is not an error.
@@ -130,6 +148,20 @@ export default function DatasetPage({ params }: { params: Promise<{ id: string }
     return () => clearInterval(timer);
   }, [dataset, load]);
 
+  async function runBriefing(question?: string) {
+    setBriefingBusy(true);
+    setBriefingError(null);
+    try {
+      setBriefing(await api.runBriefing(id, question));
+    } catch (err) {
+      setBriefingError(
+        err instanceof RequestError ? err.error.message : "The briefing could not be run.",
+      );
+    } finally {
+      setBriefingBusy(false);
+    }
+  }
+
   async function generateSummary() {
     setSummaryBusy(true);
     try {
@@ -162,6 +194,10 @@ export default function DatasetPage({ params }: { params: Promise<{ id: string }
   // one advertises what is behind it.
   const tabs = [
     { id: "overview", label: "Overview" },
+    // Second rather than first: the briefing costs model calls, so it opens on
+    // a button rather than running itself. Landing on an empty call-to-action
+    // would be a worse first impression than landing on the dashboard.
+    { id: "briefing", label: "Briefing", count: roster?.specialists.length || null },
     { id: "predictions", label: "Predictions", count: predictionCount || null },
     { id: "data", label: "Data" },
     { id: "quality", label: "Quality", count: quality?.issues.length || null },
@@ -257,6 +293,18 @@ export default function DatasetPage({ params }: { params: Promise<{ id: string }
                   </div>
 
                   <Chat datasetId={id} />
+                </div>
+              )}
+
+              {tab === "briefing" && (
+                <div role="tabpanel">
+                  <BriefingPanel
+                    briefing={briefing}
+                    roster={roster}
+                    busy={briefingBusy}
+                    onRun={runBriefing}
+                    error={briefingError}
+                  />
                 </div>
               )}
 

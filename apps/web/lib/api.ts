@@ -297,6 +297,46 @@ export type DataModel = {
   }[];
 };
 
+/** Which fleet specialists this dataset's shape can serve. */
+export type FleetCapability = {
+  specialists: string[];
+  /** The roster once a question is supplied — the analyst needs one to work. */
+  with_question: string[];
+};
+
+export type BriefingFinding = {
+  id: string;
+  specialist: string;
+  /** `refused` is a legitimate outcome, not a failure. Shown as such. */
+  status: "ok" | "refused" | "failed";
+  headline: string;
+  detail: Record<string, unknown>;
+  sql: string | null;
+  method: string | null;
+};
+
+export type Briefing = {
+  id: string;
+  dataset_id: string;
+  question: string | null;
+  headline: string;
+  narrative: string;
+  recommendations: { action: string; rationale?: string; priority?: string }[];
+  plan_reasoning: string | null;
+  findings: BriefingFinding[];
+  input_tokens: number | null;
+  output_tokens: number | null;
+  duration_ms: number | null;
+  created_at: string;
+};
+
+export type BriefingSummary = {
+  id: string;
+  question: string | null;
+  headline: string;
+  created_at: string;
+};
+
 export type Answer = {
   conversation_id: string;
   answer: string;
@@ -371,4 +411,14 @@ export const api = {
 
   summary: (id: string) =>
     request<{ summary: string }>(`/datasets/${id}/summary`, { method: "POST" }),
+
+  fleet: (id: string) => request<FleetCapability>(`/datasets/${id}/fleet`),
+  briefings: (id: string) => request<BriefingSummary[]>(`/datasets/${id}/briefings`),
+  briefing: (id: string, runId: string) =>
+    request<Briefing>(`/datasets/${id}/briefings/${runId}`),
+  runBriefing: (id: string, question?: string) =>
+    request<Briefing>(`/datasets/${id}/briefing`, {
+      method: "POST",
+      body: { question: question ?? null },
+    }),
 };

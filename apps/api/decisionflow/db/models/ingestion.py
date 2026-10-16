@@ -605,3 +605,89 @@ class DataQualityIssue(OrgScopedMixin, UUIDPrimaryKeyMixin, TimestampMixin, Base
     __table_args__ = (
         Index("ix_data_quality_issues_dataset_id_severity", "dataset_id", "severity"),
     )
+
+
+class BriefingRun(OrgScopedMixin, UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """One pass of the agent fleet over a dataset.
+
+    Persisted, unlike predictions, for two reasons. A briefing costs several
+    model calls, so recomputing it to re-read it is a real expense. And it is
+    an opinion formed at a moment in time — "here is what we thought in March,
+    and what we recommended" is worth keeping even once the data has moved on,
+    which is precisely why a stale forecast is not.
+    """
+
+    __tablename__ = "briefing_runs"
+
+    dataset_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("datasets.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # Null for a standing briefing — "how is the business doing?" — which has
+    # no question behind it and runs every applicable specialist.
+    question: Mapped[str | None] = mapped_column(Text)
+
+    headline: Mapped[str] = mapped_column(Text, nullable=False)
+    narrative: Mapped[str] = mapped_column(Text, nullable=False)
+    recommendations: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+
+    # Why these specialists were chosen, in the planner's own words. Kept
+    # because an unexplained routing decision is impossible to debug when the
+    # fleet consults the wrong specialist.
+    plan_reasoning: Mapped[str | None] = mapped_column(Text)
+    model: Mapped[str | None] = mapped_column(String(80))
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+
+    created_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+    findings: Mapped[list[BriefingFinding]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="BriefingFinding.created_at",
+        lazy="raise",
+    )
+
+    __table_args__ = (
+        Index("ix_briefing_runs_dataset_id_created_at", "dataset_id", "created_at"),
+    )
+
+
+class BriefingFinding(OrgScopedMixin, UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """What one specialist reported during a run.
+
+    Stored separately from the narrative on purpose. The narrative is the
+    model's phrasing; these are the computed facts underneath it. Keeping them
+    apart is what lets the UI show a reader the evidence for a claim, and what
+    makes a fabricated figure detectable rather than merely unlikely.
+    """
+
+    __tablename__ = "briefing_findings"
+
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("briefing_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    specialist: Mapped[str] = mapped_column(String(40), nullable=False)
+    # ok | refused | failed. A refusal is recorded rather than dropped: "we
+    # could not forecast, and here is why" is information the reader needs.
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    headline: Mapped[str] = mapped_column(Text, nullable=False)
+
+    detail: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    sql: Mapped[str | None] = mapped_column(Text)
+    method: Mapped[str | None] = mapped_column(String(80))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+
+    run: Mapped[BriefingRun] = relationship(back_populates="findings", lazy="raise")

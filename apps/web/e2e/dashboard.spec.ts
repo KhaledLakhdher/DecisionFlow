@@ -108,13 +108,19 @@ test("tab labels advertise what is behind them", async ({ signedIn: page }) => {
 test("tabs are keyboard navigable", async ({ signedIn: page }) => {
   await openDashboard(page);
 
-  await page.getByRole("tab", { name: /overview/i }).focus();
-  await page.keyboard.press("ArrowRight");
+  // Positional rather than by name: the property under test is that an arrow
+  // key moves to the *adjacent* tab. Naming the expected destination made this
+  // fail the moment a tab was inserted before it, which is a change in the
+  // arrangement rather than a regression in keyboard support.
+  const tabs = page.getByRole("tab");
+  await tabs.first().focus();
 
-  await expect(page.getByRole("tab", { name: /predictions/i })).toHaveAttribute(
-    "aria-selected",
-    "true",
-  );
+  await page.keyboard.press("ArrowRight");
+  await expect(tabs.nth(1)).toHaveAttribute("aria-selected", "true");
+  await expect(tabs.first()).toHaveAttribute("aria-selected", "false");
+
+  await page.keyboard.press("ArrowLeft");
+  await expect(tabs.first()).toHaveAttribute("aria-selected", "true");
 });
 
 test("the data tab shows the schema and cleaned rows", async ({ signedIn: page }) => {

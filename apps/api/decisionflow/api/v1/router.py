@@ -8,6 +8,7 @@ from decisionflow.api.v1 import (
     assistant,
     auth,
     datasets,
+    fleet,
     health,
     modelling,
     orgs,
@@ -22,3 +23,4 @@ api_router.include_router(datasets.router)
 api_router.include_router(predictions.router)
 api_router.include_router(modelling.router)
 api_router.include_router(assistant.router)
+api_router.include_router(fleet.router)

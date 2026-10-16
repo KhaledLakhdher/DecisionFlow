@@ -1,0 +1,29 @@
+customer_id,Customer Name,Country,Segment
+C-001,Ada Lovelace,United States,SMB
+C-002,Grace Hopper,Ireland,Mid-market
+C-003,Alan Turing,Germany,Enterprise
+C-004,Katherine Johnson,Canada,SMB
+C-005,Joan Clarke,United Kingdom,Mid-market
+C-006,Barbara Liskov,United States,Enterprise
+C-007,Margaret Hamilton,Ireland,SMB
+C-008,Edsger Dijkstra,Germany,Mid-market
+C-009,Donald Knuth,Canada,Enterprise
+C-010,Frances Allen,United Kingdom,SMB
+C-011,Adele Goldberg,United States,Mid-market
+C-012,Tim Berners-Lee,Ireland,Enterprise
+C-013,Radia Perlman,Germany,SMB
+C-014,Leslie Lamport,Canada,Mid-market
+C-015,Shafi Goldwasser,United Kingdom,Enterprise
+C-016,Ken Thompson,United States,SMB
+C-017,Dennis Ritchie,Ireland,Mid-market
+C-018,Anita Borg,Germany,Enterprise
+C-019,Jean Bartik,Canada,SMB
+C-020,Karen Sparck Jones,United Kingdom,Mid-market
+C-021,Sophie Wilson,United States,Enterprise
+C-022,Lynn Conway,Ireland,SMB
+C-023,Carol Shaw,Germany,Mid-market
+C-024,Evelyn Boyd Granville,Canada,Enterprise
+C-025,Mary Kenneth Keller,United Kingdom,SMB
+C-026,Erna Hoover,United States,Mid-market
+C-027,Annie Easley,Ireland,Enterprise
+C-028,Dorothy Vaughan,Germany,SMB

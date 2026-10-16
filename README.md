@@ -11,6 +11,21 @@ dashboard, and an analyst you can interrogate in plain English.
 
 ---
 
+## Demo
+
+[![DecisionFlow demo](demo/poster.png)](demo/decisionflow-demo.mp4)
+
+**[▶ Watch the walkthrough](demo/decisionflow-demo.mp4)** — 2m24s. Sign in,
+upload three spreadsheets, watch the pipeline run, then a fleet of agents
+produces a brief with recommendations, and foreign keys are inferred into a
+star schema.
+
+Recorded against the running stack, not a mock: the uploads go through the real
+ingestion pipeline and the briefing spends real model calls. See
+[`apps/web/demo/`](apps/web/demo/) to re-record it.
+
+---
+
 ## Status
 
 Milestone 1 — in progress. See [Roadmap](#roadmap).
@@ -25,7 +40,7 @@ Milestone 1 — in progress. See [Roadmap](#roadmap).
 | 4 | Semantic layer + automatic KPIs | ✅ Complete |
 | 5 | Machine learning (forecast, churn, anomalies) | ✅ Complete |
 | 6 | LLM narrative layer + NL→SQL agent | ✅ Complete |
-| 7 | Agent fleet | ⬜ Next |
+| 7 | Agent fleet (executive routing + specialists) | ✅ Complete |
 
 ---
 
@@ -523,6 +538,57 @@ accuracy.
 Nothing is persisted. Predictions go stale the moment the data changes, so a
 cached one is a wrong one waiting to be shown.
 
+### The agent fleet
+
+An executive that routes, specialists that compute, and a synthesiser that
+writes it up:
+
+```
+question → plan → specialists (in parallel) → brief + recommendations
+```
+
+The division of labour is the design. Specialists compute — SQL, regression,
+decomposition — and every number they return is derived from the data. The
+model only decides *who to ask* and *how to phrase it*. **No figure in a brief
+originates with a language model**, which is what makes the output safe to put
+in front of someone who will act on it. Asked to both analyse and narrate, a
+model fills gaps in the analysis with fluent prose, and the reader cannot tell
+which sentences are grounded.
+
+| Specialist | Computes | Method |
+|---|---|---|
+| Analyst | A specific factual question | NL→SQL, guarded and executed |
+| Investigator | Why the headline measure moved | Contribution analysis |
+| Sentinel | Periods off the trend | Median absolute deviation |
+| Forecaster | The measure projected forward | Linear trend / Holt-Winters |
+| Retention | Customers likely to have lapsed | Logistic regression on RFM |
+
+**Contribution analysis** is the piece that makes this more than a chatbot over
+SQL. Asked *why* revenue fell, a language model produces a fluent guess —
+seasonality, the market, a competitor — none of it from the data. The real
+answer is arithmetic: decompose the change across every dimension and see where
+the movement is concentrated. Three outcomes, and two of them decline to name a
+culprit:
+
+- **Concentrated** — one segment carries more movement than all others
+  combined. It is named, with its before and after.
+- **Broad-based** — the change is spread evenly. Reported as such. A system
+  that always produces a culprit is reliably wrong exactly when it matters.
+- **Offsetting** — segments moved against each other, so the net figure hides
+  what happened. Shares of a small net change are meaningless here (a region
+  growing 2,980 against a net rise of 290 is "1028% of the change", which is
+  true and useless), so the absolute movements are reported instead.
+
+Specialists run concurrently and are individually wrapped. One that refuses —
+too little history to forecast, too few customers to model — produces a
+recorded finding rather than taking the run down, and the refusal reaches the
+reader. A brief silently missing retention implies it was looked at and found
+unremarkable.
+
+Runs are persisted, unlike predictions. A briefing costs several model calls,
+and it is an opinion formed at a moment in time: *what we thought in March, and
+what we recommended* stays worth reading after the data has moved on.
+
 ### Authorization
 
 Two levels of caller identity, deliberately distinct:
@@ -549,9 +615,13 @@ that is answered from your actual data.
 **Milestone 2 — the analyst.** Star-schema modelling, forecasting, churn
 classification, anomaly detection, narrative explanation.
 
-**Milestone 3 — the agent fleet.** Specialised agents (SQL, visualisation,
-forecast, report, recommendation) behind an executive agent that decomposes a
-CEO-level question and routes it.
+**Milestone 3 — the agent fleet.** ✅ Specialised agents (analyst,
+investigator, sentinel, forecaster, retention) behind an executive that routes
+a business question and synthesises what they found.
+
+**Next — deployment.** Dockerfiles for API, worker and web; one compose file
+that brings the whole product up; GitHub Actions running the pytest and
+Playwright suites on every push.
 
 ---
 

@@ -34,3 +34,8 @@ storage/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Demo recording: the raw Playwright capture and the credentials for the
+# throwaway demo workspace. The published mp4 in demo/ is kept.
+apps/web/demo/recording/
+apps/web/demo/data/credentials.json
